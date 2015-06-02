@@ -6,6 +6,8 @@ import sys
 import thread
 import time
 import argparse
+import syslog
+
 from plop import platform
 
 
@@ -124,6 +126,13 @@ class FlamegraphFormatter(CollectorFormatter):
         return ";".join(funcs)
 
 
+def print_msg(msg, to_syslog, log_level=syslog.LOG_INFO):
+    if to_syslog:
+        syslog.syslog(log_level, msg)
+    else:
+        print msg
+
+
 def main():
     # TODO: more options, refactor this into somewhere shared
     # between tornado.autoreload and auto2to3
@@ -140,12 +149,20 @@ def main():
     parser.add_argument("--duration", help="Profiling duration in seconds", default=3600,
                         type=int)
     parser.add_argument("--max-stacks", help=("Number of most frequent stacks to store."
-                        " Ignored for Flamegraph output."), type=int, default=50)
+                                              " Ignored for Flamegraph output."), type=int, default=50)
+    parser.add_argument("--output-folder", help=("Folder where the profiles will be saved."),
+                        type=str, default="profiles")
+    parser.add_argument("--syslog", help=("Should this output to syslog, or stdout."),
+                        type=bool, default="False")
+
     parser.add_argument("target", help="Module or script to run")
     parser.add_argument("arguments", nargs=argparse.REMAINDER,
                         help="Pass-through arguments for the profiled application")
     args = parser.parse_args()
     sys.argv = [args.target] + args.arguments
+
+    if args.syslog:
+        syslog.openlog()
 
     if args.format == "flamegraph":
         extension = "flame"
@@ -154,14 +171,24 @@ def main():
         extension = "plop"
         formatter = PlopFormatter(max_stacks=args.max_stacks)
     else:
-        sys.stderr.write("Unhandled output format: %s" % args.format)
-        sys.stderr.flush()
+        msg = "Unhandled output format: %s" % args.format
+        if args.syslog:
+            print_msg(msg, True, syslog.LOG_ERR)
+        else:
+            sys.stderr.write(msg)
+            sys.stderr.flush()
         sys.exit(1)
 
-    if not os.path.exists('profiles'):
-        os.mkdir('profiles')
-    filename = 'profiles/%s-%s.%s' % (args.target, time.strftime('%Y%m%d-%H%M-%S'),
-                                      extension)
+
+    if not os.path.exists(args.output_folder):
+        msg = "Creating output folder: %s" % args.output_folder
+        print_msg(msg, args.syslog)
+
+        os.mkdir(args.output_folder)
+    filename = '%s/%s-%s.%s' % (args.output_folder,
+                                os.path.basename(args.target),
+                                time.strftime('%Y%m%d-%H%M-%S'),
+                                extension)
 
     collector = Collector(mode=args.mode, interval=args.interval)
     collector.start(duration=args.duration)
@@ -183,12 +210,17 @@ def main():
     collector.stop()
     if collector.samples_taken:
         formatter.store(collector, filename)
-        print "profile output saved to %s" % filename
+        msg = "profile output saved to %s" % filename
+        print_msg(msg, args.syslog)
         overhead = float(collector.sample_time) / collector.samples_taken
-        print "overhead was %s per sample (%s%%)" % (
+        print_msg(msg, args.syslog)
+        msg = "overhead was %s per sample (%s%%)" % (
             overhead, overhead / collector.interval)
+        print_msg(msg, args.syslog)
     else:
-        print "no samples collected; program was too fast"
+        msg = "no samples collected; program was too fast"
+        print_msg(msg, args.syslog)
+
     sys.exit(exit_code)
 
 
